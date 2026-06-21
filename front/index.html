@@ -948,17 +948,19 @@
     mix.setBalance(parseFloat(els.voiceVol.value), parseFloat(els.bgmVol.value));
     mix.setMonitor(true);                    // スピーカーへ出す
     setPreviewDisabled(true);
-    // ctx.resume と BGM ロードの両方を待つ（suspended のまま再生すると無音になるため）
-    Promise.all([
-      mix.resume(),
-      (sel.bgm && sel.bgm.src) ? mix.setBgm(srcUrl(sel.bgm.src)) : Promise.resolve()
-    ]).then(function () {
+    // ★ クリック(ユーザー操作)の同期内で BGM 要素を生成＆一度 play() してロック解除
+    //   （非同期の .then 後だと autoplay 制限で bgmEl.play() が拒否され無音になる）
+    var resumeP = mix.resume();
+    var bgmP = (sel.bgm && sel.bgm.src) ? mix.setBgm(srcUrl(sel.bgm.src)) : Promise.resolve();
+    mix.startBgm();
+    // ctx.resume と BGM ロードの両方を待ってから本再生
+    Promise.all([resumeP, bgmP]).then(function () {
       els.srcVideo.muted = false;
       els.srcVideo.loop = false;
       phase = 'clip';
       try { els.srcVideo.currentTime = parseFloat(els.trimIn.value); } catch (e) {}
       var p = els.srcVideo.play(); if (p && p.catch) p.catch(function () {});
-      mix.startBgm();           // BGM をクリップ先頭から再生
+      mix.startBgm();           // BGM をクリップ先頭から再生（要素は解除済みなのでOK）
       previewing = true;
       setPreviewDisabled(false);
       setPreviewLabel('■ プレビュー停止');
@@ -1011,11 +1013,14 @@
     mix.setVoiceNorm(voiceNorm);    // 録音レベルが低い動画を持ち上げ
     mix.setBalance(parseFloat(els.voiceVol.value), parseFloat(els.bgmVol.value));
 
+    // ★ クリック(ユーザー操作)の同期内で BGM 要素を生成＆一度 play() してロック解除
+    //   （非同期の .then 後だと autoplay 制限で bgmEl.play() が拒否され、書き出しにBGMが乗らない）
+    var resumeP = mix.resume();
+    var bgmP = (sel.bgm && sel.bgm.src) ? mix.setBgm(srcUrl(sel.bgm.src)) : Promise.resolve();
+    mix.startBgm();
+
     // ctx.resume と BGM ロードの両方を待ってから録画開始
-    Promise.all([
-      mix.resume(),
-      (sel.bgm && sel.bgm.src) ? mix.setBgm(srcUrl(sel.bgm.src)) : Promise.resolve()
-    ]).then(function () {
+    Promise.all([resumeP, bgmP]).then(function () {
       // 録画中は実音声を取り込むためミュート解除（MediaElementSource 経由でグラフへ）
       els.srcVideo.muted = false;
       els.srcVideo.loop = false;

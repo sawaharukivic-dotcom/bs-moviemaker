@@ -96,7 +96,9 @@
     }
 
     function startBgm() {
-      if (bgmEl) { bgmEl.currentTime = 0; var p = bgmEl.play(); if (p && p.catch) p.catch(function () {}); }
+      if (!bgmEl) return;
+      try { bgmEl.currentTime = 0; } catch (e) {} // 未ロード時の currentTime 設定を保護
+      var p = bgmEl.play(); if (p && p.catch) p.catch(function () {});
     }
     // 現在位置のまま再生（位置は seekBgm で別途指定する用）
     function resumeBgm() {

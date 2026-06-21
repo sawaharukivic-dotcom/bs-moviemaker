@@ -70,50 +70,52 @@
       }
     }
 
-    var bgmEl = null, bgmSrc = null;
+    // BGM は MediaElement(new Audio) ではなく AudioBufferSource で鳴らす。
+    // iOS Safari は MediaElement の音を MediaStreamDestination（録画用）へ取り込めず、
+    // 書き出しにBGMが乗らないため。BufferSource は純WebAudioで確実に録画ストリームへ流れる。
+    var bgmBuffer = null;  // 復号済み AudioBuffer
+    var bgmNode = null;    // 現在再生中の BufferSource（one-shot。再開のたびに作り直す）
+
     function setBgm(url) {
       return new Promise(function (resolve) {
         stopBgm();
-        if (bgmSrc) { try { bgmSrc.disconnect(); } catch (e) {} bgmSrc = null; }
-        if (!url) { bgmEl = null; resolve(); return; }
-        bgmEl = new Audio();
-        bgmEl.crossOrigin = 'anonymous';
-        bgmEl.loop = true;
-        bgmEl.preload = 'auto';
-        bgmEl.src = url;
-        bgmEl.addEventListener('canplaythrough', function () { resolve(); }, { once: true });
-        bgmEl.addEventListener('error', function () { resolve(); }, { once: true });
-        try {
-          bgmSrc = ctx.createMediaElementSource(bgmEl);
-          bgmSrc.connect(bgmGain);
-        } catch (e) {
-          console.warn('[audiomixer] BGM source failed:', e && e.message);
-          resolve();
-        }
-        // 念のためロード打ち切り
-        setTimeout(resolve, 4000);
+        bgmBuffer = null;
+        if (!url) { resolve(); return; }
+        var finished = false;
+        var done = function () { if (!finished) { finished = true; resolve(); } };
+        fetch(url).then(function (r) { return r.arrayBuffer(); }).then(function (ab) {
+          ctx.decodeAudioData(ab.slice(0), function (buf) { bgmBuffer = buf; done(); }, function () { done(); });
+        }).catch(function () { done(); });
+        setTimeout(done, 8000); // 取得/復号が長すぎる場合の打ち切り
       });
     }
 
-    function startBgm() {
-      if (!bgmEl) return;
-      try { bgmEl.currentTime = 0; } catch (e) {} // 未ロード時の currentTime 設定を保護
-      var p = bgmEl.play(); if (p && p.catch) p.catch(function () {});
+    // offset 秒からループ再生（BufferSource を新規生成）。ctx が running であること。
+    function startBgmAt(offset) {
+      if (!bgmBuffer) return;
+      stopBgm();
+      var node = ctx.createBufferSource();
+      node.buffer = bgmBuffer;
+      node.loop = true;
+      node.connect(bgmGain);
+      var off = offset || 0;
+      var d = bgmBuffer.duration;
+      if (d > 0) { off = off % d; if (off < 0) off += d; }
+      try { node.start(0, off); } catch (e) {}
+      bgmNode = node;
     }
-    // 現在位置のまま再生（位置は seekBgm で別途指定する用）
-    function resumeBgm() {
-      if (bgmEl) { var p = bgmEl.play(); if (p && p.catch) p.catch(function () {}); }
-    }
+    function startBgm() { startBgmAt(0); }
+    function resumeBgm() { if (!bgmNode) startBgmAt(0); } // 後方互換（現在は未使用）
     function stopBgm() {
-      if (bgmEl) { try { bgmEl.pause(); } catch (e) {} }
+      if (bgmNode) {
+        try { bgmNode.stop(); } catch (e) {}
+        try { bgmNode.disconnect(); } catch (e) {}
+        bgmNode = null;
+      }
     }
-    // BGM 再生位置を sec に合わせる（ループ長で剰余）。映像のシーク/範囲ループ追従用。
+    // BGM 再生位置を sec に合わせる（再生中のみ貼り直し）。映像のシーク追従用。
     function seekBgm(sec) {
-      if (!bgmEl) return;
-      var t = sec || 0;
-      var d = bgmEl.duration;
-      if (d && isFinite(d) && d > 0) { t = t % d; if (t < 0) t += d; }
-      try { bgmEl.currentTime = Math.max(0, t); } catch (e) {}
+      if (bgmNode) startBgmAt(sec);
     }
 
     function setBalance(voiceVol, bgmVol) {

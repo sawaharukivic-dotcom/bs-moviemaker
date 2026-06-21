@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>BackStage 宣伝動画メーカー</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./style.css">
+
+<!-- 描画・音声・書き出しモジュール（疎結合・window.BSMM.* に公開） -->
+<script src="../js/chromakey.js"></script>
+<script src="../js/compositor.js"></script>
+<script src="../js/audiomixer.js"></script>
+<script src="../js/recorder.js"></script>
+<script src="../js/timeline.js"></script>
+<script src="../js/presets.js"></script>
+<!-- file:// 直開き用フォールバック（http 配信時は presets.public.json が優先） -->
+<script src="../data/presets.js"></script>
+</head>
+<body>
+
+<div class="app">
+  <header class="header">
+    <div class="title">🎬 宣伝動画メーカー</div>
+    <div class="sub">アプリの動作確認（グリーンバック）を録画 → ここで合成</div>
+  </header>
+
+  <!-- STEP 1: 動画を選ぶ -->
+  <section class="card" id="uploadCard">
+    <div class="step-title"><span class="num">1</span> 緑背景の録画動画を選ぶ</div>
+    <label class="filebtn">
+      <input type="file" id="fileInput" accept="video/*">
+      動画ファイルを選択
+    </label>
+    <div class="hint">アプリ →「動作確認（収録）」→ 背景切替で緑にした画面を画面録画した動画を選んでください。</div>
+    <div class="hint mic-tip">🎤 <b>声を入れるには</b>：iPhone は画面録画ボタンを<b>長押し → マイクを ON</b>にしてから録ってください（既定は OFF で無音になります）。</div>
+  </section>
+
+  <!-- プレビュー + 編集（動画選択後に表示） -->
+  <section class="editor hidden" id="editor">
+    <div class="warn-banner hidden" id="audioWarn">
+      ⚠️ この動画から音声が検出できませんでした。録画時にマイクを ON にしましたか？（このまま作成も可能です）
+    </div>
+    <div class="preview-wrap">
+      <canvas id="stage" class="stage"></canvas>
+      <div class="preview-badge">プレビュー（9:16）</div>
+      <button type="button" class="place-toggle" id="placeToggle">配置を調整</button>
+    </div>
+
+    <details class="step-collapse" id="cropStep" open>
+      <summary class="step-title"><span class="num">2</span> 範囲を選ぶ（録画マーク・余白を消す）</summary>
+      <div class="crop-wrap" id="cropWrap">
+        <canvas id="cropStage" class="crop-stage"></canvas>
+      </div>
+      <div class="hint">枠をドラッグして、使いたい範囲だけを囲みます（録画中マークは枠の外へ）。</div>
+      <button type="button" class="ghost-btn" id="cropReset">切り抜きをリセット</button>
+    </details>
+
+    <div class="step-title"><span class="num">3</span> 配置（9:16内に置く）</div>
+    <div class="hint">上のプレビュー右下「配置を調整」を押すと、アバターをドラッグで移動・四隅で拡縮（比率維持）できます。</div>
+
+    <div class="step-title"><span class="num">4</span> 背景</div>
+    <div class="chips" id="bgChips"></div>
+    <input type="file" id="bgUpload" accept="image/*" hidden>
+    <button type="button" class="ghost-btn" id="bgUploadBtn">＋ 背景をアップロード</button>
+
+    <div class="step-title"><span class="num">5</span> 盛り上げ素材</div>
+    <div class="chips" id="overlayChips"></div>
+    <input type="file" id="ovUpload" accept="image/*" hidden>
+    <button type="button" class="ghost-btn" id="ovUploadBtn">＋ 素材をアップロード</button>
+    <button type="button" class="ghost-btn" id="ovToggle">素材を調整</button>
+    <div class="hint">「素材を調整」を押すと、選んだ素材をプレビュー上でドラッグ移動・四隅で拡縮（自由変形）できます。</div>
+    <details class="step-collapse" id="ovCropStep">
+      <summary class="step-title sub">素材をトリミング（一部だけ使う）</summary>
+      <div class="crop-wrap" id="ovCropWrap">
+        <canvas id="ovCropStage" class="crop-stage"></canvas>
+      </div>
+      <div class="hint">枠をドラッグして、素材の使いたい部分だけを残します。</div>
+      <button type="button" class="ghost-btn" id="ovCropReset">トリミングをリセット</button>
+    </details>
+
+    <button type="button" class="ghost-btn js-preview-btn">▶ プレビュー再生（音つき・範囲）</button>
+
+    <div class="step-title"><span class="num">6</span> BGM・音量</div>
+    <div class="chips" id="bgmChips"></div>
+    <input type="file" id="bgmUpload" accept="audio/*" hidden>
+    <button type="button" class="ghost-btn" id="bgmUploadBtn">＋ BGMをアップロード</button>
+    <div class="slider-row">
+      <label>声 <input type="range" id="voiceVol" min="0" max="1" step="0.05" value="1"></label>
+      <label>BGM <input type="range" id="bgmVol" min="0" max="1" step="0.05" value="0.3"></label>
+    </div>
+
+    <div class="step-title"><span class="num">7</span> 長さ（トリミング）</div>
+    <div class="trim">
+      <label>開始 <span id="inLabel">0.0s</span><input type="range" id="trimIn" min="0" max="100" step="0.1" value="0"></label>
+      <label>終了 <span id="outLabel">0.0s</span><input type="range" id="trimOut" min="0" max="100" step="0.1" value="100"></label>
+      <div class="hint" id="durLabel">尺: 0.0秒</div>
+      <label class="seek-label">再生位置（ドラッグで移動）<input type="range" id="seekBar" min="0" max="100" step="0.05" value="0"></label>
+      <div class="hint" id="seekLabel">現在 0.0s ／ 全 0.0s</div>
+    </div>
+    <button type="button" class="ghost-btn js-preview-btn">▶ プレビュー再生（音つき・範囲）</button>
+    <div class="hint">声＋BGMを聞きながら、トリミングした範囲を繰り返し再生して確認できます。</div>
+
+    <div class="preview-wrap hidden" id="previewMirrorWrap">
+      <canvas id="previewMirror" class="stage"></canvas>
+      <div class="preview-badge">プレビュー（再生中）</div>
+    </div>
+
+    <details class="advanced">
+      <summary>クロマキー微調整（緑が残る/抜けすぎる時）</summary>
+      <label>抜く強さ <input type="range" id="ckSim" min="0.1" max="0.7" step="0.01" value="0.40"></label>
+      <label>縁のぼかし <input type="range" id="ckSmo" min="0" max="0.3" step="0.01" value="0.10"></label>
+      <label>緑かぶり除去 <input type="range" id="ckSpl" min="0" max="0.5" step="0.01" value="0.15"></label>
+    </details>
+
+    <button class="make-btn" id="makeBtn">この内容で動画を作成</button>
+    <div class="hint">作成中は画面を消さないでください（録画は実時間で進みます）。</div>
+  </section>
+
+  <!-- 進捗 -->
+  <section class="card hidden" id="progressCard">
+    <div class="step-title">作成中…</div>
+    <div class="progress"><div class="bar" id="progressBar"></div></div>
+    <div class="hint" id="progressText">0%</div>
+  </section>
+
+  <!-- 結果 -->
+  <section class="card hidden" id="resultCard">
+    <div class="step-title">✅ できました！</div>
+    <video id="resultVideo" class="result-video" controls playsinline></video>
+    <div class="result-actions">
+      <a id="downloadLink" class="dl-btn" download>端末に保存</a>
+      <button id="shareBtn" class="share-btn">共有</button>
+    </div>
+    <div class="hint" id="formatNote"></div>
+    <button id="againBtn" class="ghost-btn">もう一度作る</button>
+  </section>
+
+  <footer class="foot">BackStage 運営ツール</footer>
+</div>
+
+<!-- 緑抜き対象のソース動画（非表示） -->
+<video id="srcVideo" class="hidden-media" playsinline webkit-playsinline crossorigin="anonymous"></video>
+
+<script>
+(function () {
+  'use strict';
+
+  // 出力解像度（9:16）。スマホ性能を考慮し 720x1280 を既定とする。
+  var OUT_W = 720, OUT_H = 1280;
+  var END_TRANS_DUR = 2.0;  // 動画の最後、映像→ロゴへ溶ける（クロスフェード）秒数。大きいほどゆっくり
+  var BGM_DELAY = 0.8;      // 動画終端後、BGMをそのまま維持する秒数（その後フェード開始）
+  var BGM_FADE_DUR = 1.2;   // BGMが消えるまでの秒数
+  var END_SILENCE = 1.0;    // BGMが消えた後、無音でロゴを見せる秒数
+  var END_HOLD = BGM_DELAY + BGM_FADE_DUR + END_SILENCE; // エンドカード（ロゴ静止）の全長
+  var EVO_LOGO_SRC = 'assets/overlays/evo_logo.png';
+
+  // 正規化矩形をドラッグ編集する再利用部品。hostEl(position:relative) に重ねる。
+  function createRectEditor(hostEl, opts) {
+    opts = opts || {};
+    var minSize = opts.minSize != null ? opts.minSize : 0.1;
+    var aspect = opts.aspect != null ? opts.aspect : null; // host CSS px の w/h 比
+    var onChange = opts.onChange || function () {};
+    var rect = opts.initial || { x: 0.1, y: 0.1, w: 0.8, h: 0.8 };
+
+    var root = document.createElement('div');
+    root.className = 'rect-editor';
+    var box = document.createElement('div');
+    box.className = 'rect-box';
+    root.appendChild(box);
+    ['nw', 'ne', 'sw', 'se'].forEach(function (k) {
+      var h = document.createElement('div');
+      h.className = 'handle h-' + k;
+      h.dataset.k = k;
+      box.appendChild(h);
+    });
+    hostEl.appendChild(root);
+
+    function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+    function layout() {
+      box.style.left = (rect.x * 100) + '%';
+      box.style.top = (rect.y * 100) + '%';
+      box.style.width = (rect.w * 100) + '%';
+      box.style.height = (rect.h * 100) + '%';
+    }
+    layout();
+
+    function hostSize() { return { w: hostEl.clientWidth || 1, h: hostEl.clientHeight || 1 }; }
+
+    // aspect(=cssW/cssH) を正規化空間の w/h 比に変換: (w*hostW)/(h*hostH)=aspect
+    function normAspect() {
+      if (aspect == null) return null;
+      var hs = hostSize();
+      return aspect * (hs.h / hs.w); // w_norm / h_norm
+    }
+
+    var drag = null; // {mode:'move'|'nw'|..., startX,startY, orig:{...}}
+    function toNorm(ev) {
+      var b = hostEl.getBoundingClientRect();
+      return { x: (ev.clientX - b.left) / b.width, y: (ev.clientY - b.top) / b.height };
+    }
+
+    function onDown(ev, mode) {
+      ev.preventDefault();
+      drag = { mode: mode, start: toNorm(ev), orig: { x: rect.x, y: rect.y, w: rect.w, h: rect.h } };
+      try { ev.target.setPointerCapture(ev.pointerId); } catch (e) {}
+    }
+
+    function onMove(ev) {
+      if (!drag) return;
+      var p = toNorm(ev);
+      var dx = p.x - drag.start.x, dy = p.y - drag.start.y;
+      var o = drag.orig;
+      if (drag.mode === 'move') {
+        rect.x = clamp(o.x + dx, 0, 1 - o.w);
+        rect.y = clamp(o.y + dy, 0, 1 - o.h);
+      } else {
+        var na = normAspect();
+        var left = o.x, top = o.y, right = o.x + o.w, bottom = o.y + o.h;
+        if (drag.mode.indexOf('w') >= 0) left = clamp(o.x + dx, 0, right - minSize);
+        if (drag.mode.indexOf('e') >= 0) right = clamp(o.x + o.w + dx, left + minSize, 1);
+        if (drag.mode.indexOf('n') >= 0) top = clamp(o.y + dy, 0, bottom - minSize);
+        if (drag.mode.indexOf('s') >= 0) bottom = clamp(o.y + o.h + dy, top + minSize, 1);
+        var w = right - left, h = bottom - top;
+        if (na != null) {
+          // アスペクト維持: 高さ基準で幅を合わせ、はみ出しを抑える
+          w = h * na;
+          if (drag.mode.indexOf('w') >= 0) left = right - w; else right = left + w;
+          if (left < 0) { left = 0; w = right; h = w / na; if (drag.mode.indexOf('n') >= 0) top = bottom - h; else bottom = top + h; }
+          if (right > 1) { right = 1; w = right - left; h = w / na; if (drag.mode.indexOf('n') >= 0) top = bottom - h; else bottom = top + h; }
+        }
+        rect.x = left; rect.y = top; rect.w = right - left; rect.h = bottom - top;
+      }
+      layout();
+      onChange({ x: rect.x, y: rect.y, w: rect.w, h: rect.h });
+    }
+
+    function onUp(ev) { drag = null; }
+
+    box.addEventListener('pointerdown', function (ev) {
+      if (ev.target.classList.contains('handle')) onDown(ev, ev.target.dataset.k);
+      else onDown(ev, 'move');
+    });
+    root.addEventListener('pointermove', onMove);
+    root.addEventListener('pointerup', onUp);
+    root.addEventListener('pointercancel', onUp);
+
+    return {
+      getRect: function () { return { x: rect.x, y: rect.y, w: rect.w, h: rect.h }; },
+      setRect: function (r) { rect = { x: r.x, y: r.y, w: r.w, h: r.h }; layout(); },
+      setAspect: function (a) { aspect = (a != null ? a : null); },
+      show: function () { root.classList.remove('hidden'); },
+      hide: function () { root.classList.add('hidden'); },
+      destroy: function () { try { hostEl.removeChild(root); } catch (e) {} }
+    };
+  }
+
+  var els = {
+    fileInput: document.getElementById('fileInput'),
+    editor: document.getElementById('editor'),
+    stage: document.getElementById('stage'),
+    bgChips: document.getElementById('bgChips'),
+    overlayChips: document.getElementById('overlayChips'),
+    bgmChips: document.getElementById('bgmChips'),
+    textInputs: document.getElementById('textInputs'),
+    voiceVol: document.getElementById('voiceVol'),
+    bgmVol: document.getElementById('bgmVol'),
+    trimIn: document.getElementById('trimIn'),
+    trimOut: document.getElementById('trimOut'),
+    inLabel: document.getElementById('inLabel'),
+    outLabel: document.getElementById('outLabel'),
+    durLabel: document.getElementById('durLabel'),
+    seekBar: document.getElementById('seekBar'),
+    seekLabel: document.getElementById('seekLabel'),
+    ckSim: document.getElementById('ckSim'),
+    ckSmo: document.getElementById('ckSmo'),
+    ckSpl: document.getElementById('ckSpl'),
+    makeBtn: document.getElementById('makeBtn'),
+    progressCard: document.getElementById('progressCard'),
+    progressBar: document.getElementById('progressBar'),
+    progressText: document.getElementById('progressText'),
+    resultCard: document.getElementById('resultCard'),
+    resultVideo: document.getElementById('resultVideo'),
+    downloadLink: document.getElementById('downloadLink'),
+    shareBtn: document.getElementById('shareBtn'),
+    formatNote: document.getElementById('formatNote'),
+    againBtn: document.getElementById('againBtn'),
+    srcVideo: document.getElementById('srcVideo'),
+    cropWrap: document.getElementById('cropWrap'),
+    cropStage: document.getElementById('cropStage'),
+    cropReset: document.getElementById('cropReset'),
+    placeToggle: document.getElementById('placeToggle'),
+    ovToggle: document.getElementById('ovToggle'),
+    ovCropWrap: document.getElementById('ovCropWrap'),
+    ovCropStage: document.getElementById('ovCropStage'),
+    ovCropReset: document.getElementById('ovCropReset'),
+    bgUpload: document.getElementById('bgUpload'),
+    bgUploadBtn: document.getElementById('bgUploadBtn'),
+    ovUpload: document.getElementById('ovUpload'),
+    ovUploadBtn: document.getElementById('ovUploadBtn'),
+    bgmUpload: document.getElementById('bgmUpload'),
+    bgmUploadBtn: document.getElementById('bgmUploadBtn'),
+    previewBtns: Array.prototype.slice.call(document.querySelectorAll('.js-preview-btn')),
+    previewMirrorWrap: document.getElementById('previewMirrorWrap'),
+    previewMirror: document.getElementById('previewMirror'),
+    audioWarn: document.getElementById('audioWarn')
+  };
+
+  els.stage.width = OUT_W;
+  els.stage.height = OUT_H;
+  els.previewMirror.width = OUT_W;
+  els.previewMirror.height = OUT_H;
+  var mirrorCtx = els.previewMirror.getContext('2d');
+
+  var comp = window.BSMM.compositor.create(els.stage);
+  var stageCtx = els.stage.getContext('2d'); // フェード用（compositor と同一の2dコンテキスト）
+  var tl = window.BSMM.timeline.create(els.srcVideo);
+  var mix = null; // 録画開始時に生成（AudioContext のユーザー操作制約）
+
+  var presets = null;
+  var loadedAssets = {}; // src -> HTMLImageElement / HTMLVideoElement
+  var sel = { bg: null, overlay: null, bgm: null, texts: {} };
+  var overlayRects = {}; // overlay.id -> 配置先の正規化 rect（自由変形）
+  var overlayCrops = {}; // overlay.id -> ソース切り抜きの正規化 rect / null=全体
+
+  // 右上に常時表示する BackStage 公式ロゴ（固定ブランディング・選択不可）
+  var LOGO_SRC = 'assets/overlays/backstage_logo.png';
+  var logoRect = null;
+  function computeLogoRect(img) {
+    var asp = (img.naturalWidth && img.naturalHeight) ? img.naturalWidth / img.naturalHeight : 3;
+    var w = 0.26, margin = 0.035;
+    var h = (w * OUT_W) / (asp * OUT_H); // 縦横比を保つ（OUT px 比で算出）
+    return { x: 1 - w - margin, y: margin, w: w, h: h };
+  }
+  var rendering = false, recording = false;
+
+  var avatarCrop = null;   // ソース部分矩形（正規化）/ null=全体
+  var avatarPlace = null;  // 出力配置先（正規化）/ null=contain（Task 5 で設定）
+  var cropEditor = null, cropRAF = null;
+
+  function applyAvatarTransform() {
+    comp.setAvatarTransform({ crop: avatarCrop, place: avatarPlace });
+  }
+
+  function checkAudioPresence() {
+    els.audioWarn.classList.add('hidden');
+    window.BSMM.audiomixer.probeAudio(els.srcVideo).then(function (res) {
+      if (res === 'no') els.audioWarn.classList.remove('hidden');
+      // 'yes' / 'unknown' は警告しない（誤検知でブロックしないため）
+    });
+  }
+
+  // cropStage をソースアスペクトに合わせ、srcVideo を毎フレーム描く＋矩形エディタを重ねる
+  function setupCropEditor() {
+    var vw = els.srcVideo.videoWidth || 9, vh = els.srcVideo.videoHeight || 16;
+    els.cropStage.width = vw; els.cropStage.height = vh;     // 実寸=ソースアスペクト
+    var cctx = els.cropStage.getContext('2d');
+    if (cropRAF) cancelAnimationFrame(cropRAF);
+    (function drawCrop() {
+      try { cctx.drawImage(els.srcVideo, 0, 0, vw, vh); } catch (e) {}
+      cropRAF = requestAnimationFrame(drawCrop);
+    })();
+    if (cropEditor) cropEditor.destroy();
+    cropEditor = createRectEditor(els.cropWrap, {
+      initial: avatarCrop || { x: 0, y: 0, w: 1, h: 1 },
+      aspect: null,
+      onChange: function (r) {
+        avatarCrop = r;
+        avatarPlace = defaultPlaceFromCrop(r);   // 切り抜き比率が変わるので配置を再フィット
+        if (placeEditor) { placeEditor.setAspect(croppedCssAspect()); placeEditor.setRect(avatarPlace); }
+        applyAvatarTransform();
+      }
+    });
+  }
+
+  els.cropReset.onclick = function () {
+    avatarCrop = null;
+    if (cropEditor) cropEditor.setRect({ x: 0, y: 0, w: 1, h: 1 });
+    avatarPlace = defaultPlaceFromCrop(null);
+    if (placeEditor) { placeEditor.setAspect(croppedCssAspect()); placeEditor.setRect(avatarPlace); }
+    applyAvatarTransform();
+  };
+
+  var placeEditor = null, placeOn = false;
+
+  // crop 正規化 → 出力(9:16)に contain した place 正規化（比率維持）
+  function defaultPlaceFromCrop(crop) {
+    var vw = els.srcVideo.videoWidth || OUT_W, vh = els.srcVideo.videoHeight || OUT_H;
+    var c = crop || { x: 0, y: 0, w: 1, h: 1 };
+    var cw = c.w * vw, ch = c.h * vh;          // 切り抜き後ソース px
+    var ar = (ch > 0) ? cw / ch : (OUT_W / OUT_H);
+    var outAr = OUT_W / OUT_H;
+    var w, h;
+    if (ar > outAr) { w = 1; h = (OUT_W / ar) / OUT_H; }   // 横長→幅フィット
+    else { h = 1; w = (OUT_H * ar) / OUT_W; }              // 縦長→高さフィット
+    return { x: (1 - w) / 2, y: (1 - h) / 2, w: w, h: h };
+  }
+
+  // placement エディタの aspect(=host CSS px の w/h 比)= 切り抜き後ソースの px 比
+  function croppedCssAspect() {
+    var vw = els.srcVideo.videoWidth || OUT_W, vh = els.srcVideo.videoHeight || OUT_H;
+    var c = avatarCrop || { x: 0, y: 0, w: 1, h: 1 };
+    var cw = c.w * vw, ch = c.h * vh;
+    return (ch > 0) ? cw / ch : (OUT_W / OUT_H);
+  }
+
+  function setupPlaceEditor() {
+    if (placeEditor) placeEditor.destroy();
+    if (!avatarPlace) avatarPlace = defaultPlaceFromCrop(avatarCrop);
+    placeEditor = createRectEditor(document.querySelector('.preview-wrap'), {
+      initial: avatarPlace,
+      aspect: croppedCssAspect(),
+      onChange: function (r) { avatarPlace = r; applyAvatarTransform(); }
+    });
+    if (!placeOn) placeEditor.hide();
+  }
+
+  // プレビュー上の編集枠（配置／素材）は同時に1つだけ。片方を開くともう片方を閉じる。
+  function setPlaceOn(on) {
+    placeOn = on;
+    if (placeEditor) { on ? placeEditor.show() : placeEditor.hide(); }
+    els.placeToggle.textContent = on ? '配置を確定' : '配置を調整';
+    if (on) setOverlayOn(false);
+  }
+  function setOverlayOn(on) {
+    if (on && !overlayEditor) setupOverlayEditor(); // 選択直後にロード未完だった場合の保険
+    ovOn = on;
+    if (overlayEditor) { on ? overlayEditor.show() : overlayEditor.hide(); }
+    els.ovToggle.textContent = on ? '素材を確定' : '素材を調整';
+    if (on) setPlaceOn(false);
+  }
+
+  els.placeToggle.onclick = function () { setPlaceOn(!placeOn); };
+  els.ovToggle.onclick = function () { setOverlayOn(!ovOn); };
+
+  // ---- 盛り上げ素材の配置エディタ（自由変形）＋トリミング ----
+  var overlayEditor = null, ovOn = false;
+  var ovCropEditor = null;
+
+  // crop 矩形 → 切り抜き後の縦横比（host CSS px の w/h 比）。素材未ロード時は素材本来比。
+  function overlayCroppedAspect(o) {
+    var img = o && o.src ? loadedAssets[o.src] : null;
+    if (!img || !img.naturalWidth) return 1;
+    var cr = overlayCrops[o.id];
+    var cw = (cr ? cr.w : 1) * img.naturalWidth;
+    var ch = (cr ? cr.h : 1) * img.naturalHeight;
+    return ch > 0 ? cw / ch : 1;
+  }
+
+  // box(枠・正規化) 内に縦横比 asp の画像を contain した正規化 rect（黄色枠を実描画に一致させる）
+  function aspectFitRect(box, asp) {
+    var bx = box.x * OUT_W, by = box.y * OUT_H, bw = box.w * OUT_W, bh = box.h * OUT_H;
+    var w, h;
+    if (bw / bh > asp) { h = bh; w = h * asp; } // 枠が横長 → 高さ基準
+    else { w = bw; h = w / asp; }               // 枠が縦長 → 幅基準
+    var x = bx + (bw - w) / 2, y = by + (bh - h) / 2;
+    return { x: x / OUT_W, y: y / OUT_H, w: w / OUT_W, h: h / OUT_H };
+  }
+
+  function setupOverlayEditor() {
+    if (overlayEditor) { overlayEditor.destroy(); overlayEditor = null; }
+    var o = sel.overlay;
+    if (!o || !o.src) return;                 // 「なし」→ エディタなし
+    var img = loadedAssets[o.src];
+    if (!img || !img.naturalWidth) return;    // 未ロード
+    // 既定の配置枠は「切り抜き後の縦横比」で枠内 contain（つぶれない初期値）
+    if (!overlayRects[o.id]) overlayRects[o.id] = aspectFitRect(o.rect || { x: 0, y: 0, w: 1, h: 1 }, overlayCroppedAspect(o));
+    overlayEditor = createRectEditor(document.querySelector('.preview-wrap'), {
+      initial: overlayRects[o.id],
+      aspect: null,                           // 自由変形（縦横独立で伸縮）
+      onChange: function (r) { overlayRects[o.id] = r; applyOverlays(); }
+    });
+    if (!ovOn) overlayEditor.hide();
+  }
+
+  // 素材プレビューに本来サイズの画像を描き、切り抜き矩形エディタを重ねる
+  function setupOverlayCropEditor() {
+    if (ovCropEditor) { ovCropEditor.destroy(); ovCropEditor = null; }
+    var cctx = els.ovCropStage.getContext('2d');
+    var o = sel.overlay;
+    if (!o || !o.src) { cctx.clearRect(0, 0, els.ovCropStage.width, els.ovCropStage.height); return; }
+    var img = loadedAssets[o.src];
+    if (!img || !img.naturalWidth) return;    // 未ロード（onload で再構築）
+    els.ovCropStage.width = img.naturalWidth;
+    els.ovCropStage.height = img.naturalHeight;
+    cctx.clearRect(0, 0, img.naturalWidth, img.naturalHeight);
+    try { cctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight); } catch (e) {}
+    ovCropEditor = createRectEditor(els.ovCropWrap, {
+      initial: overlayCrops[o.id] || { x: 0, y: 0, w: 1, h: 1 },
+      aspect: null,                           // 任意範囲で切り抜き
+      onChange: function (r) { onOverlayCropChange(r); }
+    });
+  }
+
+  // 切り抜きが変わったら、配置枠を新しい比率で同じ位置に再フィット（つぶれ防止）
+  function onOverlayCropChange(r) {
+    var o = sel.overlay;
+    if (!o) return;
+    overlayCrops[o.id] = r;
+    var box = overlayRects[o.id] || aspectFitRect(o.rect || { x: 0, y: 0, w: 1, h: 1 }, 1);
+    overlayRects[o.id] = aspectFitRect(box, overlayCroppedAspect(o));
+    if (overlayEditor) overlayEditor.setRect(overlayRects[o.id]);
+    applyOverlays();
+  }
+
+  els.ovCropReset.onclick = function () {
+    var o = sel.overlay;
+    if (!o) return;
+    overlayCrops[o.id] = null;
+    if (ovCropEditor) ovCropEditor.setRect({ x: 0, y: 0, w: 1, h: 1 });
+    onOverlayCropChange({ x: 0, y: 0, w: 1, h: 1 });
+  };
+
+  // ---- プリセット読込・UI構築 ----
+  window.BSMM.presets.load().then(function (data) {
+    presets = data;
+    buildChips(els.bgChips, presets.backgrounds, function (item) { selectBg(item); }, 0);
+    buildChips(els.overlayChips, presets.overlays, function (item) { selectOverlay(item); }, 0);
+    buildChips(els.bgmChips, presets.bgms, function (item) { selectBgm(item); }, 0);
+    preloadImages();
+  });
+
+  function buildChips(container, list, onPick, defaultIdx) {
+    container.innerHTML = '';
+    (list || []).forEach(function (item, i) {
+      var b = document.createElement('button');
+      b.className = 'chip' + (i === defaultIdx ? ' active' : '');
+      b.textContent = item.label;
+      b.onclick = function () {
+        Array.prototype.forEach.call(container.children, function (c) { c.classList.remove('active'); });
+        b.classList.add('active');
+        onPick(item);
+      };
+      container.appendChild(b);
+    });
+    if (list && list[defaultIdx]) onPick(list[defaultIdx]);
+  }
+
+  // アップロード素材を chips に1つ追加し、即選択（他は非アクティブ化）
+  function addChip(container, item, onPick) {
+    var b = document.createElement('button');
+    b.className = 'chip';
+    b.textContent = item.label;
+    b.onclick = function () {
+      Array.prototype.forEach.call(container.children, function (c) { c.classList.remove('active'); });
+      b.classList.add('active');
+      onPick(item);
+    };
+    container.appendChild(b);
+    b.onclick();
+  }
+
+  // ---- 素材アップロード（端末から自分の素材を追加） ----
+  var uploadSeq = 0;
+  function baseName(name) { return (name || '素材').replace(/\.[^.]+$/, '').slice(0, 24); }
+
+  function setupUpload(btn, input, handler) {
+    btn.onclick = function () { input.click(); };
+    input.onchange = function () {
+      var f = input.files && input.files[0];
+      input.value = '';
+      if (f) handler(f);
+    };
+  }
+
+  setupUpload(els.bgUploadBtn, els.bgUpload, function (f) {
+    var url = URL.createObjectURL(f);
+    var item = { id: 'bg_user_' + (++uploadSeq), label: baseName(f.name), type: 'image', src: url, local: true };
+    var img = new Image();
+    img.onload = function () { loadedAssets[url] = img; addChip(els.bgChips, item, selectBg); };
+    img.onerror = function () { alert('背景画像を読み込めませんでした'); };
+    img.src = url;
+  });
+
+  setupUpload(els.ovUploadBtn, els.ovUpload, function (f) {
+    var url = URL.createObjectURL(f);
+    var item = { id: 'ov_user_' + (++uploadSeq), label: baseName(f.name), src: url, rect: { x: 0, y: 0, w: 1, h: 1 }, opacity: 1, local: true };
+    var img = new Image();
+    img.onload = function () { loadedAssets[url] = img; addChip(els.overlayChips, item, selectOverlay); };
+    img.onerror = function () { alert('素材画像を読み込めませんでした'); };
+    img.src = url;
+  });
+
+  setupUpload(els.bgmUploadBtn, els.bgmUpload, function (f) {
+    var url = URL.createObjectURL(f);
+    var item = { id: 'bgm_user_' + (++uploadSeq), label: baseName(f.name), src: url, defaultGain: 0.3, local: true };
+    addChip(els.bgmChips, item, selectBgm);
+  });
+
+  function buildTextInputs(templates) {
+    els.textInputs.innerHTML = '';
+    (templates || []).forEach(function (t) {
+      var wrap = document.createElement('label');
+      wrap.className = 'text-field';
+      var span = document.createElement('span');
+      span.textContent = t.label;
+      var inp = document.createElement('input');
+      inp.type = 'text';
+      inp.placeholder = t.placeholder || '';
+      inp.maxLength = 40;
+      inp.oninput = function () { sel.texts[t.slot] = { value: inp.value, tpl: t }; };
+      wrap.appendChild(span);
+      wrap.appendChild(inp);
+      els.textInputs.appendChild(wrap);
+      sel.texts[t.slot] = { value: '', tpl: t };
+    });
+  }
+
+  // プリセット相対パスは front/ から見て '../' 前置。アップロード素材(blob:/data:/http)はそのまま。
+  function srcUrl(s) { return /^(blob:|data:|https?:)/.test(s) ? s : '../' + s; }
+
+  function preloadImages() {
+    var srcs = [LOGO_SRC, EVO_LOGO_SRC];
+    (presets.backgrounds || []).forEach(function (b) { if (b.type === 'image' && b.src) srcs.push(b.src); });
+    (presets.overlays || []).forEach(function (o) { if (o.src) srcs.push(o.src); });
+    srcs.forEach(function (s) {
+      if (loadedAssets[s]) return;
+      var img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = (function (src) {
+        return function () {
+          loadedAssets[src] = img;
+          if (src === LOGO_SRC) { logoRect = computeLogoRect(img); applyOverlays(); }
+          // 選択中素材の画像が遅れてロードされた場合はエディタを再構築
+          if (sel.overlay && sel.overlay.src === src) {
+            setupOverlayEditor();
+            setupOverlayCropEditor();
+            applyOverlays();
+          }
+        };
+      })(s);
+      img.onerror = function () { /* 素材未配置。プレビューでは無視 */ };
+      img.src = srcUrl(s);
+    });
+  }
+
+  // ---- 選択ハンドラ ----
+  function selectBg(item) {
+    sel.bg = item;
+    if (item.type === 'image' && item.src && loadedAssets[item.src]) {
+      comp.setBackground({ type: 'image', el: loadedAssets[item.src] });
+    } else if (item.type === 'image' && item.src) {
+      // 未ロードなら読み込み後に反映
+      var img = new Image(); img.crossOrigin = 'anonymous';
+      img.onload = function () { loadedAssets[item.src] = img; if (sel.bg === item) comp.setBackground({ type: 'image', el: img }); };
+      img.src = srcUrl(item.src);
+      comp.setBackground({ type: 'color', color: '#000000' });
+    } else {
+      comp.setBackground({ type: 'color', color: item.color || '#000000' });
+    }
+  }
+
+  function selectOverlay(item) {
+    sel.overlay = item;
+    setupOverlayEditor();
+    setupOverlayCropEditor();
+    applyOverlays();
+  }
+  function applyOverlays() {
+    var list = [];
+    var o = sel.overlay;
+    if (o && o.src) {
+      var el = loadedAssets[o.src];
+      if (el) list.push({ el: el, rect: overlayRects[o.id] || o.rect, crop: overlayCrops[o.id] || null, opacity: o.opacity });
+    }
+    // 公式ロゴは選択素材より後＝最前面に固定描画
+    var logoEl = loadedAssets[LOGO_SRC];
+    if (logoEl && logoRect) list.push({ el: logoEl, rect: logoRect, crop: null, opacity: 1 });
+    comp.setOverlays(list);
+  }
+
+  function selectBgm(item) {
+    sel.bgm = item;
+    if (item && item.defaultGain != null) {
+      els.bgmVol.value = item.defaultGain;
+      if (typeof applyVolume === 'function') applyVolume();
+    }
+    // 実際の BGM 読込は録画時（AudioContext 生成後）に行う
+  }
+
+  // ---- テキスト適用 ----
+  function applyTexts() {
+    var arr = [];
+    Object.keys(sel.texts).forEach(function (slot) {
+      var t = sel.texts[slot];
+      if (t && t.value) arr.push({ text: t.value, rect: t.tpl.rect, style: t.tpl.style });
+    });
+    comp.setTexts(arr);
+  }
+
+  // ---- クロマキーパラメータ ----
+  function applyKey() {
+    comp.setKeyParams({
+      keyColor: [0, 1, 0],
+      similarity: parseFloat(els.ckSim.value),
+      smoothness: parseFloat(els.ckSmo.value),
+      spill: parseFloat(els.ckSpl.value)
+    });
+  }
+  [els.ckSim, els.ckSmo, els.ckSpl].forEach(function (e) { e.oninput = applyKey; });
+
+  // ---- 描画ループ（プレビュー/録画共通）----
+  function renderLoop() {
+    if (!rendering) return;
+    if (phase === 'endcard') {
+      drawEndCard();
+    } else {
+      applyTexts();
+      applyOverlays();
+      comp.renderFrame();
+      drawEndTransition(); // 終端付近で映像→ロゴへクロスフェード
+    }
+    updateSeekUI();
+    // 下部ミラー（表示中のみ stage をコピー）
+    if (!els.previewMirrorWrap.classList.contains('hidden')) {
+      try { mirrorCtx.drawImage(els.stage, 0, 0, els.previewMirror.width, els.previewMirror.height); } catch (e) {}
+    }
+    requestAnimationFrame(renderLoop);
+  }
+  function startRender() { if (!rendering) { rendering = true; requestAnimationFrame(renderLoop); } }
+
+  // ---- エンドカード（フェード後に出すロゴ画面）----
+  var phase = 'clip';        // 'clip' | 'endcard'
+  var endCardStart = 0;      // performance.now() 起点
+  var endBgmFading = false;  // この回のエンドカードでBGMフェードを開始済みか
+  function drawLogoContain(img, nx, ny, nw, nh) {
+    if (!img || !img.naturalWidth) return;
+    var W = els.stage.width, H = els.stage.height;
+    var bx = nx * W, by = ny * H, bw = nw * W, bh = nh * H;
+    var asp = img.naturalWidth / img.naturalHeight;
+    var w, h;
+    if (bw / bh > asp) { h = bh; w = h * asp; } else { w = bw; h = w / asp; }
+    stageCtx.drawImage(img, bx + (bw - w) / 2, by + (bh - h) / 2, w, h);
+  }
+  // 黒地＋上下ロゴを不透明度 a で重ねる（a=1 で完全なエンドカード）
+  function drawEndCardOverlay(a) {
+    if (a <= 0) return;
+    var W = els.stage.width, H = els.stage.height;
+    stageCtx.save();
+    stageCtx.globalAlpha = a;
+    stageCtx.fillStyle = '#000';
+    stageCtx.fillRect(0, 0, W, H);
+    stageCtx.restore();
+    stageCtx.save();
+    stageCtx.globalAlpha = a;
+    drawLogoContain(loadedAssets[LOGO_SRC], 0.15, 0.20, 0.70, 0.16);     // 上: BackStage（白）
+    drawLogoContain(loadedAssets[EVO_LOGO_SRC], 0.25, 0.44, 0.50, 0.34); // 下: EVO（カラフル）
+    stageCtx.restore();
+  }
+  // クリップ再生中：終端 END_TRANS_DUR 秒手前から、動いている映像にロゴを徐々に重ねて溶かす
+  function drawEndTransition() {
+    var o = parseFloat(els.trimOut.value) || 0, i = parseFloat(els.trimIn.value) || 0;
+    if (o <= 0) return;
+    var trans = Math.min(END_TRANS_DUR, Math.max(0, (o - i) * 0.6)); // 短尺では遷移も短く
+    if (trans <= 0) return;
+    var rem = o - (els.srcVideo.currentTime || 0);
+    if (rem >= trans) return;
+    var a = 1 - (rem / trans); // 0→1
+    if (a < 0) a = 0; else if (a > 1) a = 1;
+    drawEndCardOverlay(a);
+  }
+  // 動画終端後のエンドカード静止表示（溶けはクリップ末尾で完了済み）
+  function drawEndCard() { drawEndCardOverlay(1); }
+
+
+  // ---- ファイル選択 ----
+  els.fileInput.onchange = function () {
+    var f = els.fileInput.files && els.fileInput.files[0];
+    if (!f) return;
+    var url = URL.createObjectURL(f);
+    els.srcVideo.src = url;
+    els.srcVideo.muted = true; // プレビューは無音（音声は録画時に取り込む）
+    els.srcVideo.loop = false;
+    els.srcVideo.onloadedmetadata = function () {
+      var dur = els.srcVideo.duration || 0;
+      els.trimIn.max = dur; els.trimOut.max = dur; els.trimOut.value = dur;
+      els.seekBar.max = dur; els.seekBar.value = 0;
+      tl.setTrim(0, dur);
+      updateTrimLabels();
+      updateSeekUI();
+      comp.setVideo(els.srcVideo);
+      applyKey();
+      els.editor.classList.remove('hidden');
+      try { els.srcVideo.currentTime = 0; els.srcVideo.pause(); } catch (e) {}
+      startRender();
+      avatarCrop = null;
+      avatarPlace = defaultPlaceFromCrop(null);
+      applyAvatarTransform();
+      setupCropEditor();
+      setupPlaceEditor();
+      checkAudioPresence();
+    };
+  };
+
+  // ---- トリミングUI ----
+  function updateTrimLabels() {
+    var i = parseFloat(els.trimIn.value), o = parseFloat(els.trimOut.value);
+    if (i > o - 0.5) { i = Math.max(0, o - 0.5); els.trimIn.value = i; }
+    els.inLabel.textContent = i.toFixed(1) + 's';
+    els.outLabel.textContent = o.toFixed(1) + 's';
+    els.durLabel.textContent = '尺: ' + (o - i).toFixed(1) + '秒';
+    tl.setTrim(i, o);
+    // シークバーをトリミング範囲に合わせる（総尺もこの範囲に縮む）
+    els.seekBar.max = o; els.seekBar.min = i;
+    var sv = parseFloat(els.seekBar.value);
+    if (sv < i) els.seekBar.value = i; else if (sv > o) els.seekBar.value = o;
+    updateSeekUI();
+  }
+  els.trimIn.oninput = updateTrimLabels;
+  els.trimOut.oninput = updateTrimLabels;
+
+  // プレビュー再生中に開始/終了を確定したら、新しい範囲の先頭から再生し直す
+  function restartPreviewRange() {
+    if (!previewing) return;
+    var i = parseFloat(els.trimIn.value);
+    try { els.srcVideo.currentTime = i; } catch (e) {}
+    var p = els.srcVideo.play(); if (p && p.catch) p.catch(function () {});
+    if (mix) mix.startBgm(); // BGM もクリップ先頭から
+  }
+  els.trimIn.onchange = restartPreviewRange;
+  els.trimOut.onchange = restartPreviewRange;
+
+  // 音量スライダーは再生中（プレビュー/録画準備）でも即ミキサーへ反映
+  function applyVolume() {
+    if (mix) mix.setBalance(parseFloat(els.voiceVol.value), parseFloat(els.bgmVol.value));
+  }
+  els.voiceVol.oninput = applyVolume;
+  els.bgmVol.oninput = applyVolume;
+
+  // ---- 再生位置（シークバー）----
+  var userSeeking = false;
+  function fmt1(s) { return (s || 0).toFixed(1); }
+  function updateSeekUI() {
+    var inS = parseFloat(els.trimIn.value) || 0;
+    var outS = parseFloat(els.trimOut.value) || (els.srcVideo.duration || 0);
+    var cur = els.srcVideo.currentTime || 0;
+    if (!userSeeking && (els.srcVideo.duration || 0)) {
+      var v = cur; if (v < inS) v = inS; else if (v > outS) v = outS;
+      els.seekBar.value = v;
+    }
+    var rel = cur - inS; if (rel < 0) rel = 0; else if (rel > outS - inS) rel = outS - inS;
+    els.seekLabel.textContent = '再生位置 ' + fmt1(rel) + 's ／ 尺 ' + fmt1(Math.max(0, outS - inS)) + 's';
+  }
+  els.seekBar.oninput = function () {
+    userSeeking = true;
+    var pos = parseFloat(els.seekBar.value);
+    try { els.srcVideo.currentTime = pos; } catch (e) {}
+    if (mix) mix.seekBgm(pos - (parseFloat(els.trimIn.value) || 0)); // BGM も同じ位置へ
+    updateSeekUI();
+  };
+  els.seekBar.onchange = function () { userSeeking = false; };
+  els.seekBar.addEventListener('pointerup', function () { userSeeking = false; });
+  els.seekBar.addEventListener('pointercancel', function () { userSeeking = false; });
+
+  // ---- プレビュー再生（音つき・トリミング範囲をループ）----
+  var previewing = false;
+  function setPreviewLabel(txt) { els.previewBtns.forEach(function (b) { b.textContent = txt; }); }
+  function setPreviewDisabled(d) { els.previewBtns.forEach(function (b) { b.disabled = d; }); }
+
+  function idlePlayback() {
+    // プレビュー停止中は一時停止（シークバーを止め、現フレームを表示し続ける）
+    els.srcVideo.muted = true;
+    try { els.srcVideo.pause(); } catch (e) {}
+  }
+
+  function previewWatch() {
+    if (!previewing) return;
+    if (userSeeking) { requestAnimationFrame(previewWatch); return; } // シーク中は範囲ループを止める
+    var i = parseFloat(els.trimIn.value), o = parseFloat(els.trimOut.value);
+    if (phase === 'endcard') {
+      var elc = (performance.now() - endCardStart) / 1000;
+      // BGMは少し維持してからフェード開始
+      if (mix && !endBgmFading && elc >= BGM_DELAY) { mix.fadeOutBgm(BGM_FADE_DUR); endBgmFading = true; }
+      // 全長経過で先頭へループ復帰
+      if (elc >= END_HOLD) {
+        phase = 'clip';
+        endBgmFading = false;
+        try { els.srcVideo.currentTime = i; } catch (e) {}
+        var pr = els.srcVideo.play(); if (pr && pr.catch) pr.catch(function () {});
+        if (mix) { applyVolume(); mix.startBgm(); } // 音量を戻して頭から
+      }
+    } else if (els.srcVideo.currentTime >= o || els.srcVideo.ended) {
+      // 動画終端 → エンドカード静止へ（BGMはしばらく維持）
+      phase = 'endcard';
+      endCardStart = performance.now();
+      endBgmFading = false;
+      try { els.srcVideo.pause(); } catch (e) {}
+    }
+    requestAnimationFrame(previewWatch);
+  }
+
+  function startSoundPreview() {
+    // AudioContext はユーザー操作内で生成・resume（iOS制約）
+    if (!mix) mix = window.BSMM.audiomixer.create();
+    mix.connectVoice(els.srcVideo);          // 要素ごとに1回（内部ガード）
+    mix.setBalance(parseFloat(els.voiceVol.value), parseFloat(els.bgmVol.value));
+    mix.setMonitor(true);                    // スピーカーへ出す
+    setPreviewDisabled(true);
+    // ctx.resume と BGM ロードの両方を待つ（suspended のまま再生すると無音になるため）
+    Promise.all([
+      mix.resume(),
+      (sel.bgm && sel.bgm.src) ? mix.setBgm(srcUrl(sel.bgm.src)) : Promise.resolve()
+    ]).then(function () {
+      els.srcVideo.muted = false;
+      els.srcVideo.loop = false;
+      phase = 'clip';
+      try { els.srcVideo.currentTime = parseFloat(els.trimIn.value); } catch (e) {}
+      var p = els.srcVideo.play(); if (p && p.catch) p.catch(function () {});
+      mix.startBgm();           // BGM をクリップ先頭から再生
+      previewing = true;
+      setPreviewDisabled(false);
+      setPreviewLabel('■ プレビュー停止');
+      els.previewMirrorWrap.classList.remove('hidden');
+      els.previewMirrorWrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      requestAnimationFrame(previewWatch);
+    });
+  }
+
+  function stopSoundPreview() {
+    previewing = false;
+    phase = 'clip';
+    if (mix) { mix.stopBgm(); mix.setMonitor(false); }
+    setPreviewLabel('▶ プレビュー再生（音つき・範囲）');
+    els.previewMirrorWrap.classList.add('hidden');
+    idlePlayback();
+  }
+
+  els.previewBtns.forEach(function (b) {
+    b.onclick = function () {
+      if (recording) return;
+      previewing ? stopSoundPreview() : startSoundPreview();
+    };
+  });
+
+  // ---- 作成（録画）----
+  els.makeBtn.onclick = function () {
+    if (recording) return;
+    startRecording();
+  };
+
+  function setProgress(pct) {
+    els.progressBar.style.width = Math.round(pct) + '%';
+    els.progressText.textContent = Math.round(pct) + '%';
+  }
+
+  function startRecording() {
+    if (previewing) stopSoundPreview(); // プレビュー中なら止めてから録画
+    recording = true;
+    els.makeBtn.disabled = true;
+    setPreviewDisabled(true);
+    els.progressCard.classList.remove('hidden');
+    setProgress(0);
+
+    // AudioContext はユーザー操作内で生成・resume。
+    // MediaElementSource は要素ごとに生涯1回しか作れないため、mix は使い回す。
+    if (!mix) mix = window.BSMM.audiomixer.create();
+    mix.setMonitor(false);
+    mix.connectVoice(els.srcVideo); // 2回目以降は内部ガードで無視される
+    mix.setBalance(parseFloat(els.voiceVol.value), parseFloat(els.bgmVol.value));
+
+    // ctx.resume と BGM ロードの両方を待ってから録画開始
+    Promise.all([
+      mix.resume(),
+      (sel.bgm && sel.bgm.src) ? mix.setBgm(srcUrl(sel.bgm.src)) : Promise.resolve()
+    ]).then(function () {
+      // 録画中は実音声を取り込むためミュート解除（MediaElementSource 経由でグラフへ）
+      els.srcVideo.muted = false;
+      els.srcVideo.loop = false;
+      phase = 'clip';
+
+      var rec = window.BSMM.recorder.create({
+        canvas: els.stage,
+        audioTrack: mix.getOutputTrack(),
+        fps: 30
+      });
+
+      var inS = tl.trimIn, durS = tl.trimmedDuration();
+      tl.onFrame(function (t) {
+        var pct = durS > 0 ? ((t - inS) / durS) * 100 : 0;
+        setProgress(Math.max(0, Math.min(100, pct)));
+      });
+      // 動画終端後、エンドカード静止（END_HOLD秒）を録画してから完了。BGMは BGM_DELAY 維持後フェード
+      tl.onEnd(function () {
+        phase = 'endcard';
+        endCardStart = performance.now();
+        try { els.srcVideo.pause(); } catch (e) {}
+        setProgress(100);
+        setTimeout(function () { if (mix) mix.fadeOutBgm(BGM_FADE_DUR); }, BGM_DELAY * 1000);
+        setTimeout(function () { phase = 'clip'; finishRecording(rec); }, END_HOLD * 1000);
+      });
+
+      mix.startBgm();
+      rec.start();
+      tl.playRange();
+    });
+  }
+
+  function finishRecording(rec) {
+    rec.stop().then(function (out) {
+      mix.stopBgm();
+      recording = false;
+      els.makeBtn.disabled = false;
+      setPreviewDisabled(false);
+      setProgress(100);
+
+      var url = URL.createObjectURL(out.blob);
+      els.resultVideo.src = url;
+      els.downloadLink.href = url;
+      els.downloadLink.download = 'backstage_promo.' + out.ext;
+      els.formatNote.textContent = '形式: ' + out.mime +
+        (out.ext === 'webm' ? '（webm。SNSにアップロードできない場合は別形式での書き出しをご相談ください）' : '');
+      els.progressCard.classList.add('hidden');
+      els.resultCard.classList.remove('hidden');
+      els.resultCard.scrollIntoView({ behavior: 'smooth' });
+
+      // 共有（対応端末のみ）
+      els.shareBtn.onclick = function () {
+        var file = new File([out.blob], 'backstage_promo.' + out.ext, { type: out.mime });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          navigator.share({ files: [file], title: 'BackStage 宣伝動画' }).catch(function () {});
+        } else {
+          alert('この端末は直接共有に未対応です。「端末に保存」してから各SNSアプリで投稿してください。');
+        }
+      };
+    });
+  }
+
+  els.againBtn.onclick = function () {
+    els.resultCard.classList.add('hidden');
+    els.srcVideo.muted = true;
+    els.srcVideo.loop = false;
+    try { els.srcVideo.pause(); } catch (e) {}
+    // mix は破棄しない（MediaElementSource を再生成できないため使い回す）
+    if (mix) mix.stopBgm();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // canvas テキスト描画のためフォント読込を待つ（任意）
+  if (document.fonts && document.fonts.load) {
+    document.fonts.load('800 48px "Noto Sans JP"').catch(function () {});
+  }
+})();
+</script>
+</body>
+</html>

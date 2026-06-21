@@ -1,0 +1,94 @@
+{
+  "backgrounds": [
+    {
+      "id": "bg_evo",
+      "label": "BackStage EVO",
+      "type": "image",
+      "src": "assets/backgrounds/back_BackStageEVO宣伝動画.png"
+    }
+  ],
+  "bgms": [
+    {
+      "id": "bgm_battle",
+      "label": "バトル（オーケストラ）",
+      "src": "assets/bgm/BattleOrchestra_Patran.mp3",
+      "defaultGain": 0.3
+    }
+  ],
+  "overlays": [
+    {
+      "id": "ov_evo_front",
+      "label": "EVO 前景",
+      "src": "assets/overlays/front_BackStageEVO宣伝動画.png",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 1,
+        "h": 1
+      },
+      "opacity": 1
+    }
+  ],
+  "textTemplates": [
+    {
+      "id": "tt_name",
+      "slot": "name",
+      "label": "キャスト名",
+      "placeholder": "なまえ",
+      "rect": {
+        "x": 0.1,
+        "y": 0.74,
+        "w": 0.8,
+        "h": 0.08
+      },
+      "style": {
+        "font": "Noto Sans JP",
+        "weight": "800",
+        "size": 0.06,
+        "color": "#ffffff",
+        "stroke": "#222222",
+        "align": "center"
+      }
+    },
+    {
+      "id": "tt_catch",
+      "slot": "catch",
+      "label": "ひとこと",
+      "placeholder": "毎晩おしゃべりしてます🌙",
+      "rect": {
+        "x": 0.1,
+        "y": 0.83,
+        "w": 0.8,
+        "h": 0.06
+      },
+      "style": {
+        "font": "Noto Sans JP",
+        "weight": "600",
+        "size": 0.038,
+        "color": "#ffffff",
+        "stroke": "#222222",
+        "align": "center"
+      }
+    },
+    {
+      "id": "tt_cta",
+      "slot": "cta",
+      "label": "誘導文(CTA)",
+      "placeholder": "BackStageで話そう！",
+      "rect": {
+        "x": 0.1,
+        "y": 0.9,
+        "w": 0.8,
+        "h": 0.06
+      },
+      "style": {
+        "font": "Noto Sans JP",
+        "weight": "700",
+        "size": 0.042,
+        "color": "#ffe14d",
+        "stroke": "#222222",
+        "align": "center"
+      }
+    }
+  ]
+}

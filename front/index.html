@@ -319,6 +319,7 @@
   var stageCtx = els.stage.getContext('2d'); // フェード用（compositor と同一の2dコンテキスト）
   var tl = window.BSMM.timeline.create(els.srcVideo);
   var mix = null; // 録画開始時に生成（AudioContext のユーザー操作制約）
+  var voiceNorm = 1.0; // 動画音声のノーマライズ用ゲイン（読み込み時に解析して算出）
 
   var presets = null;
   var loadedAssets = {}; // src -> HTMLImageElement / HTMLVideoElement
@@ -351,6 +352,46 @@
       if (res === 'no') els.audioWarn.classList.remove('hidden');
       // 'yes' / 'unknown' は警告しない（誤検知でブロックしないため）
     });
+  }
+
+  // 音声バッファからノーマライズ用ゲインを算出（RMSを目標へ。クリップ防止＋持ち上げのみ・上限8倍）
+  function computeNormGain(buf) {
+    var peak = 0, sumSq = 0, n = 0;
+    for (var c = 0; c < buf.numberOfChannels; c++) {
+      var d = buf.getChannelData(c);
+      var stride = Math.max(1, Math.floor(d.length / 400000)); // 長尺は間引いて高速化
+      for (var i = 0; i < d.length; i += stride) {
+        var v = d[i]; if (v < 0) v = -v;
+        if (v > peak) peak = v;
+        sumSq += d[i] * d[i]; n++;
+      }
+    }
+    if (n === 0 || peak === 0) return 1.0;
+    var rms = Math.sqrt(sumSq / n);
+    var TARGET_RMS = 0.12, TARGET_PEAK = 0.97, MAX_BOOST = 8.0;
+    var gRms = rms > 0 ? TARGET_RMS / rms : 1.0;
+    var gPeak = TARGET_PEAK / peak;
+    var g = Math.min(gRms, gPeak);
+    if (g < 1.0) g = 1.0;            // 下げない（低レベル対策＝持ち上げのみ）
+    if (g > MAX_BOOST) g = MAX_BOOST;
+    return g;
+  }
+
+  // 読み込み時に動画の音声を1回解析して voiceNorm を決める
+  function analyzeVoiceLevel(url) {
+    voiceNorm = 1.0;
+    if (!url || !window.fetch) return;
+    fetch(url).then(function (r) { return r.arrayBuffer(); }).then(function (ab) {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      var actx = new AC();
+      var done = function () { try { actx.close(); } catch (e) {} };
+      actx.decodeAudioData(ab.slice(0), function (buf) {
+        voiceNorm = computeNormGain(buf);
+        if (mix) mix.setVoiceNorm(voiceNorm); // 既にミキサーがあれば即反映
+        done();
+      }, function () { done(); /* 解析失敗＝等倍のまま */ });
+    }).catch(function () { /* 等倍のまま */ });
   }
 
   // cropStage をソースアスペクトに合わせ、srcVideo を毎フレーム描く＋矩形エディタを重ねる
@@ -774,6 +815,7 @@
     els.srcVideo.src = url;
     els.srcVideo.muted = true; // プレビューは無音（音声は録画時に取り込む）
     els.srcVideo.loop = false;
+    analyzeVoiceLevel(url);    // 音声レベルを1回解析→ノーマライズゲイン算出
     els.srcVideo.onloadedmetadata = function () {
       var dur = els.srcVideo.duration || 0;
       els.trimIn.max = dur; els.trimOut.max = dur; els.trimOut.value = dur;
@@ -902,6 +944,7 @@
     // AudioContext はユーザー操作内で生成・resume（iOS制約）
     if (!mix) mix = window.BSMM.audiomixer.create();
     mix.connectVoice(els.srcVideo);          // 要素ごとに1回（内部ガード）
+    mix.setVoiceNorm(voiceNorm);             // 録音レベルが低い動画を持ち上げ
     mix.setBalance(parseFloat(els.voiceVol.value), parseFloat(els.bgmVol.value));
     mix.setMonitor(true);                    // スピーカーへ出す
     setPreviewDisabled(true);
@@ -965,6 +1008,7 @@
     if (!mix) mix = window.BSMM.audiomixer.create();
     mix.setMonitor(false);
     mix.connectVoice(els.srcVideo); // 2回目以降は内部ガードで無視される
+    mix.setVoiceNorm(voiceNorm);    // 録音レベルが低い動画を持ち上げ
     mix.setBalance(parseFloat(els.voiceVol.value), parseFloat(els.bgmVol.value));
 
     // ctx.resume と BGM ロードの両方を待ってから録画開始

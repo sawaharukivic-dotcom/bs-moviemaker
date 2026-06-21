@@ -26,14 +26,24 @@
 
     var streamDest = ctx.createMediaStreamDestination();
 
-    var voiceGain = ctx.createGain();
+    var voiceNormGain = ctx.createGain(); // ノーマライズ用の固定ゲイン（音量スライダーとは別段）
+    var voiceGain = ctx.createGain();     // ユーザーの声音量
     var bgmGain = ctx.createGain();
+    voiceNormGain.gain.value = 1.0;
     voiceGain.gain.value = 1.0;
     bgmGain.gain.value = 0.3;
+
+    // 声: src → voiceNormGain → voiceGain → 出力
+    voiceNormGain.connect(voiceGain);
 
     // ミックス出力（録画用）へは常時接続
     voiceGain.connect(streamDest);
     bgmGain.connect(streamDest);
+
+    // ノーマライズ用ゲインを設定（>0 のみ。録音レベルが低い動画を持ち上げる用途）
+    function setVoiceNorm(g) {
+      if (g != null && isFinite(g) && g > 0) voiceNormGain.gain.value = g;
+    }
 
     var monitorOn = false;
     function setMonitor(on) {
@@ -52,7 +62,7 @@
       if (voiceConnected) return;
       try {
         var src = ctx.createMediaElementSource(videoEl);
-        src.connect(voiceGain);
+        src.connect(voiceNormGain);
         voiceConnected = true;
       } catch (e) {
         // 同一要素で2回呼ぶと例外。無視。
@@ -132,6 +142,7 @@
     return {
       resume: resume,
       connectVoice: connectVoice,
+      setVoiceNorm: setVoiceNorm,
       setBgm: setBgm,
       startBgm: startBgm,
       resumeBgm: resumeBgm,

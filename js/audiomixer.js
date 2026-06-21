@@ -159,8 +159,10 @@
       // 2) webkitAudioDecodedByteCount: 再生が進むと音声ありで増える
       if (typeof el.webkitAudioDecodedByteCount === 'number') {
         if (el.webkitAudioDecodedByteCount > 0) { resolve('yes'); return; }
+        // 停止中はデコードが進まず判定できない → 'no' と断定せず unknown（誤警告防止）
+        if (el.paused) { resolve('unknown'); return; }
         var start = el.webkitAudioDecodedByteCount;
-        // 少し再生を進めてから再評価（プレビューは自動再生中の想定）
+        // 少し再生を進めてから再評価（再生中のみ正確）
         setTimeout(function () {
           resolve(el.webkitAudioDecodedByteCount > start ? 'yes' : 'no');
         }, 800);

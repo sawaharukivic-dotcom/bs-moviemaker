@@ -784,14 +784,20 @@
       comp.setVideo(els.srcVideo);
       applyKey();
       els.editor.classList.remove('hidden');
-      try { els.srcVideo.currentTime = 0; els.srcVideo.pause(); } catch (e) {}
       startRender();
       avatarCrop = null;
       avatarPlace = defaultPlaceFromCrop(null);
       applyAvatarTransform();
       setupCropEditor();
       setupPlaceEditor();
+      // 音声有無は読み込み時に判定：一瞬だけ無音再生してデコードを進め → 判定 → 先頭で停止
+      els.srcVideo.muted = true;
+      try { els.srcVideo.currentTime = 0; } catch (e) {}
+      var pp = els.srcVideo.play(); if (pp && pp.catch) pp.catch(function () {});
       checkAudioPresence();
+      setTimeout(function () {
+        if (!previewing && !recording) { try { els.srcVideo.pause(); els.srcVideo.currentTime = 0; } catch (e) {} }
+      }, 1000);
     };
   };
 
